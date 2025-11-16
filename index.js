@@ -1,6 +1,8 @@
 const express = require('express');
-const puppeteer = require('puppeteer-core');
-const chromium = require('@sparticuz/chromium');
+const puppeteer = require('puppeteer');
+const Tesseract = require('tesseract.js');
+const axios = require('axios');
+const pdf = require('pdf-parse');
 const cors = require('cors');
 
 const app = express();
@@ -31,27 +33,33 @@ app.post('/api/scrape', async (req, res) => {
 
     console.log(`Scraping URL: ${url} for query: ${query}`);
 
-    // Launch browser with minimal flags for Railway
+    // Launch headless browser
     browser = await puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
-      headless: chromium.headless,
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-software-rasterizer',
+        '--disable-dev-tools'
+      ]
     });
 
     const page = await browser.newPage();
     
-    // Set user agent
+    // Set viewport and user agent
+    await page.setViewport({ width: 1920, height: 1080 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
-    // Navigate with timeout
+    // Navigate and wait for content to load
     await page.goto(url, { 
-      waitUntil: 'networkidle0',
-      timeout: 25000 
+      waitUntil: 'networkidle2',
+      timeout: 30000 
     });
 
-    // Small wait for dynamic content
-    await page.waitForTimeout(1500);
+    // Wait for dynamic content
+    await page.waitForTimeout(2000);
 
     // Extract all data
     const scrapedData = await page.evaluate(() => {
@@ -62,18 +70,15 @@ app.post('/api/scrape', async (req, res) => {
         lists: [],
         links: [],
         images: [],
-        tables: [],
         metadata: {
           description: document.querySelector('meta[name="description"]')?.content || '',
-          keywords: document.querySelector('meta[name="keywords"]')?.content || '',
-          ogTitle: document.querySelector('meta[property="og:title"]')?.content || '',
-          ogDescription: document.querySelector('meta[property="og:description"]')?.content || ''
+          keywords: document.querySelector('meta[name="keywords"]')?.content || ''
         }
       };
 
       // Extract headings
       document.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(el => {
-        const text = el.innerText?.trim();
+        const text = el.innerText.trim();
         if (text && text.length > 0) {
           data.headings.push({
             level: el.tagName.toLowerCase(),
@@ -82,17 +87,11 @@ app.post('/api/scrape', async (req, res) => {
         }
       });
 
-      // Extract all visible text elements
-      document.querySelectorAll('p, div, span, li, td, th, a, button, label').forEach(el => {
+      // Extract paragraphs
+      document.querySelectorAll('p, div, span, li, td, th').forEach(el => {
         const text = el.innerText?.trim();
-        // Only get direct text, avoid duplicates from nested elements
-        if (text && text.length > 15 && text.length < 1000) {
-          const hasChildWithSameText = Array.from(el.children).some(child => 
-            child.innerText?.trim() === text
-          );
-          if (!hasChildWithSameText) {
-            data.paragraphs.push(text);
-          }
+        if (text && text.length > 20 && text.length < 1000) {
+          data.paragraphs.push(text);
         }
       });
 
@@ -100,7 +99,7 @@ app.post('/api/scrape', async (req, res) => {
       document.querySelectorAll('ul, ol').forEach(el => {
         const items = [];
         el.querySelectorAll('li').forEach(li => {
-          const text = li.innerText?.trim();
+          const text = li.innerText.trim();
           if (text) items.push(text);
         });
         if (items.length > 0) {
@@ -108,34 +107,19 @@ app.post('/api/scrape', async (req, res) => {
         }
       });
 
-      // Extract tables
-      document.querySelectorAll('table').forEach(table => {
-        const rows = [];
-        table.querySelectorAll('tr').forEach(tr => {
-          const cells = [];
-          tr.querySelectorAll('td, th').forEach(cell => {
-            cells.push(cell.innerText?.trim() || '');
-          });
-          if (cells.length > 0) rows.push(cells);
-        });
-        if (rows.length > 0) {
-          data.tables.push(rows);
-        }
-      });
-
       // Extract all links
       document.querySelectorAll('a[href]').forEach(el => {
         const href = el.href;
-        const text = el.innerText?.trim();
-        if (href && text && text.length > 0) {
+        const text = el.innerText.trim();
+        if (href && text) {
           data.links.push({ href, text });
         }
       });
 
-      // Extract images with alt text
+      // Extract all images with their URLs
       document.querySelectorAll('img').forEach(img => {
         const src = img.src;
-        const alt = img.alt?.trim() || '';
+        const alt = img.alt || '';
         if (src && !src.includes('data:image')) {
           data.images.push({ src, alt });
         }
@@ -144,9 +128,28 @@ app.post('/api/scrape', async (req, res) => {
       return data;
     });
 
-    // Get all body text for contact extraction
+    // Extract contact information from visible text
     const bodyText = await page.evaluate(() => document.body.innerText);
     scrapedData.contactInfo = extractContactInfo(bodyText);
+
+    // OCR on images if query relates to menus, prices, or visual content
+    const visualKeywords = ['menu', 'price', 'pricing', 'cost', 'food', 'drink', 'special', 'beer', 'wine', 'coffee'];
+    const needsOCR = visualKeywords.some(kw => query.toLowerCase().includes(kw));
+
+    if (needsOCR && scrapedData.images.length > 0) {
+      console.log('Running OCR on images...');
+      scrapedData.imageText = await extractTextFromImages(scrapedData.images.slice(0, 5)); // Limit to 5 images
+    }
+
+    // Check for PDF links
+    const pdfLinks = scrapedData.links.filter(link => 
+      link.href.toLowerCase().endsWith('.pdf')
+    );
+
+    if (pdfLinks.length > 0 && needsOCR) {
+      console.log('Found PDF links, extracting text...');
+      scrapedData.pdfText = await extractTextFromPDFs(pdfLinks.slice(0, 2)); // Limit to 2 PDFs
+    }
 
     await browser.close();
 
@@ -165,8 +168,9 @@ app.post('/api/scrape', async (req, res) => {
           title: scrapedData.title,
           summary: relevantContent.summary,
           contactInfo: scrapedData.contactInfo,
-          relevantSections: relevantContent.details.slice(0, 20),
-          metadata: scrapedData.metadata
+          relevantSections: relevantContent.details.slice(0, 15),
+          imageText: scrapedData.imageText || [],
+          pdfText: scrapedData.pdfText || []
         })
       }]
     });
@@ -189,6 +193,67 @@ app.post('/api/scrape', async (req, res) => {
     });
   }
 });
+
+// Extract text from images using OCR
+async function extractTextFromImages(images) {
+  const results = [];
+  
+  for (const img of images) {
+    try {
+      console.log(`Processing image: ${img.src}`);
+      
+      const { data: { text } } = await Tesseract.recognize(
+        img.src,
+        'eng',
+        {
+          logger: m => console.log(m)
+        }
+      );
+      
+      if (text && text.trim().length > 10) {
+        results.push({
+          source: img.src,
+          alt: img.alt,
+          extractedText: text.trim()
+        });
+      }
+    } catch (err) {
+      console.error(`Failed to OCR image ${img.src}:`, err.message);
+    }
+  }
+  
+  return results;
+}
+
+// Extract text from PDF files
+async function extractTextFromPDFs(pdfLinks) {
+  const results = [];
+  
+  for (const link of pdfLinks) {
+    try {
+      console.log(`Processing PDF: ${link.href}`);
+      
+      const response = await axios.get(link.href, {
+        responseType: 'arraybuffer',
+        timeout: 15000
+      });
+      
+      const pdfData = await pdf(response.data);
+      
+      if (pdfData.text && pdfData.text.trim().length > 10) {
+        results.push({
+          source: link.href,
+          title: link.text,
+          extractedText: pdfData.text.trim()
+        });
+      }
+    } catch (err) {
+      console.error(`Failed to extract PDF ${link.href}:`, err.message);
+    }
+  }
+  
+  return results;
+}
 
 // Helper function to validate URLs
 function isValidUrl(string) {
@@ -213,36 +278,24 @@ function extractContactInfo(text) {
   const emails = text.match(emailRegex);
   if (emails) {
     contactInfo.emails = [...new Set(emails)]
-      .filter(email => 
-        !email.includes('.png') && 
-        !email.includes('.jpg') &&
-        !email.includes('.gif') &&
-        !email.toLowerCase().includes('example')
-      )
+      .filter(email => !email.includes('.png') && !email.includes('.jpg'))
       .slice(0, 5);
   }
 
-  // Phone regex - multiple formats
+  // Phone regex (various formats)
   const phoneRegex = /(\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
   const phones = text.match(phoneRegex);
   if (phones) {
     contactInfo.phones = [...new Set(phones)]
-      .filter(phone => phone.replace(/\D/g, '').length >= 10)
+      .filter(phone => phone.length >= 10)
       .slice(0, 5);
   }
 
-  // Address regex - looks for street patterns
-  const addressRegex = /\d{1,6}\s+[\w\s]{3,50}(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Circle|Cir|Way|Parkway|Pkwy)[.,]?\s*(?:Suite|Ste|Unit|Apt|#)?\s*[\w\d]*[,]?\s*[\w\s]+[,]\s*[A-Z]{2}\s*\d{5}(?:-\d{4})?/gi;
+  // Address regex (basic - looks for street patterns)
+  const addressRegex = /\d{1,5}\s+[\w\s]{3,30}(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Way)[.,]?\s*(?:Suite|Ste|Unit|#)?\s*[\w\d]*[,]?\s*[\w\s]+[,]\s*[A-Z]{2}\s*\d{5}/gi;
   const addresses = text.match(addressRegex);
   if (addresses) {
     contactInfo.addresses = [...new Set(addresses)].slice(0, 3);
-  }
-
-  // Hours regex - common patterns
-  const hoursRegex = /(?:Mon(?:day)?|Tue(?:sday)?|Wed(?:nesday)?|Thu(?:rsday)?|Fri(?:day)?|Sat(?:urday)?|Sun(?:day)?)[\s:-]+\d{1,2}(?::\d{2})?\s*(?:AM|PM|am|pm)?[\s-]+\d{1,2}(?::\d{2})?\s*(?:AM|PM|am|pm)?/gi;
-  const hours = text.match(hoursRegex);
-  if (hours) {
-    contactInfo.hours = [...new Set(hours)].slice(0, 7);
   }
 
   return contactInfo;
@@ -262,82 +315,90 @@ function filterRelevantContent(data, query) {
   data.headings.forEach(heading => {
     const headingLower = heading.text.toLowerCase();
     const matches = keywords.filter(kw => headingLower.includes(kw)).length;
-    if (matches > 0 || keywords.length === 0) {
+    if (matches > 0) {
       relevant.details.push({
         type: 'heading',
         text: heading.text,
-        score: matches * 3
+        score: matches * 3 // Headings are more important
       });
     }
   });
 
   // Score and collect relevant paragraphs
-  const uniqueParagraphs = [...new Set(data.paragraphs)];
-  uniqueParagraphs.forEach(para => {
+  data.paragraphs.forEach(para => {
     const paraLower = para.toLowerCase();
     const matches = keywords.filter(kw => paraLower.includes(kw)).length;
-    if ((matches > 0 || keywords.length === 0) && para.length < 800) {
+    if (matches > 0 && para.length < 500) {
       relevant.details.push({
-        type: 'text',
+        type: 'paragraph',
         text: para,
         score: matches
       });
     }
   });
 
-  // Add table data for relevant queries
-  if (data.tables.length > 0) {
-    const tableKeywords = ['price', 'pricing', 'menu', 'cost', 'schedule', 'hours'];
-    if (tableKeywords.some(kw => queryLower.includes(kw))) {
-      data.tables.forEach(table => {
-        const tableText = table.map(row => row.join(' | ')).join('\n');
+  // Add OCR text if available
+  if (data.imageText) {
+    data.imageText.forEach(img => {
+      const imgLower = img.extractedText.toLowerCase();
+      const matches = keywords.filter(kw => imgLower.includes(kw)).length;
+      if (matches > 0) {
         relevant.details.push({
-          type: 'table',
-          text: `Table:\n${tableText}`,
-          score: 5
+          type: 'image_text',
+          text: `[Menu Image] ${img.extractedText}`,
+          score: matches * 2 // Images often contain important info
         });
-      });
-    }
+      }
+    });
+  }
+
+  // Add PDF text if available
+  if (data.pdfText) {
+    data.pdfText.forEach(pdf => {
+      const pdfLower = pdf.extractedText.toLowerCase();
+      const matches = keywords.filter(kw => pdfLower.includes(kw)).length;
+      if (matches > 0) {
+        const excerpt = pdf.extractedText.substring(0, 800);
+        relevant.details.push({
+          type: 'pdf_text',
+          text: `[From PDF: ${pdf.title}] ${excerpt}`,
+          score: matches * 2
+        });
+      }
+    });
   }
 
   // Sort by relevance score
   relevant.details.sort((a, b) => b.score - a.score);
 
   // Include contact info for relevant queries
-  const contactKeywords = ['contact', 'email', 'phone', 'call', 'reach', 'address', 'location', 'hours', 'open'];
+  const contactKeywords = ['contact', 'email', 'phone', 'call', 'reach', 'address', 'location'];
   if (contactKeywords.some(kw => queryLower.includes(kw))) {
     if (data.contactInfo.emails.length > 0) {
       relevant.details.unshift({
         type: 'contact',
-        text: `📧 Email: ${data.contactInfo.emails.join(', ')}`,
+        text: `Email: ${data.contactInfo.emails.join(', ')}`,
         score: 999
       });
     }
     if (data.contactInfo.phones.length > 0) {
       relevant.details.unshift({
         type: 'contact',
-        text: `📞 Phone: ${data.contactInfo.phones.join(', ')}`,
+        text: `Phone: ${data.contactInfo.phones.join(', ')}`,
         score: 999
       });
     }
     if (data.contactInfo.addresses.length > 0) {
       relevant.details.unshift({
         type: 'contact',
-        text: `📍 Address: ${data.contactInfo.addresses.join(', ')}`,
-        score: 999
-      });
-    }
-    if (data.contactInfo.hours && data.contactInfo.hours.length > 0) {
-      relevant.details.unshift({
-        type: 'contact',
-        text: `🕐 Hours: ${data.contactInfo.hours.join(', ')}`,
+        text: `Address: ${data.contactInfo.addresses.join(', ')}`,
         score: 999
       });
     }
   }
 
   // Create summary from top results
-  const topResults = relevant.details.slice(0, 15);
+  const topResults = relevant.details.slice(0, 12);
   relevant.summary = topResults.map(item => item.text).join('\n\n');
   relevant.details = topResults.map(item => item.text);
 
@@ -345,9 +406,9 @@ function filterRelevantContent(data, query) {
   if (relevant.summary.length === 0) {
     relevant.summary = [
       data.title,
-      data.metadata.description || data.metadata.ogDescription,
+      data.metadata.description,
       ...data.headings.slice(0, 5).map(h => h.text),
-      ...uniqueParagraphs.slice(0, 5)
+      ...data.paragraphs.slice(0, 3)
     ].filter(Boolean).join('\n\n');
   }
 
@@ -359,20 +420,20 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok',
     timestamp: new Date().toISOString(),
-    service: 'VAPI Lightweight Web Scraper',
-    features: ['JavaScript rendering', 'Contact extraction', 'Fast deployment']
+    service: 'VAPI Enhanced Web Scraper',
+    features: ['JavaScript rendering', 'OCR', 'PDF extraction']
   });
 });
 
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({ 
-    message: 'VAPI Lightweight Web Scraper Tool',
+    message: 'VAPI Enhanced Web Scraper Tool',
     features: [
-      'JavaScript-rendered content (React, Vue, Angular)',
-      'Smart contact information extraction',
-      'Table data extraction',
-      'Fast and reliable'
+      'JavaScript-rendered content',
+      'Image text extraction (OCR)',
+      'PDF text extraction',
+      'Contact information extraction'
     ],
     endpoints: {
       health: '/health',
@@ -383,7 +444,7 @@ app.get('/', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 VAPI Lightweight Scraper running on port ${PORT}`);
+  console.log(`🚀 VAPI Enhanced Web Scraper running on port ${PORT}`);
   console.log(`📡 Health check: http://localhost:${PORT}/health`);
-  console.log(`⚡ Optimized for speed and reliability`);
+  console.log(`✨ Features: JS Rendering, OCR, PDF Extraction`);
 });
