@@ -1,22 +1,25 @@
 {
-  "name": "vapi-web-scraper",
-  "version": "1.0.0",
-  "description": "Web scraping tool for VAPI AI assistant",
+  "name": "vapi-enhanced-web-scraper",
+  "version": "2.0.0",
+  "description": "Enhanced web scraping tool for VAPI with OCR and PDF support",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js"
   },
-  "keywords": ["vapi", "scraper", "ai", "assistant"],
+  "keywords": ["vapi", "scraper", "ocr", "ai", "assistant"],
   "author": "",
   "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
     "axios": "^1.6.7",
     "cheerio": "^1.0.0-rc.12",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "puppeteer": "^21.9.0",
+    "tesseract.js": "^5.0.4",
+    "pdf-parse": "^1.1.1"
   },
   "engines": {
-    "node": "20.x"
+    "node": ">=18.x"
   }
 }
