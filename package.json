@@ -1,23 +1,20 @@
 {
-  "name": "vapi-enhanced-web-scraper",
+  "name": "vapi-lightweight-scraper",
   "version": "2.0.0",
-  "description": "Enhanced web scraping tool for VAPI with OCR and PDF support",
+  "description": "Lightweight web scraping tool for VAPI optimized for Railway",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js"
   },
-  "keywords": ["vapi", "scraper", "ocr", "ai", "assistant"],
+  "keywords": ["vapi", "scraper", "ai", "assistant"],
   "author": "",
   "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
-    "axios": "^1.6.7",
-    "cheerio": "^1.0.0-rc.12",
     "cors": "^2.8.5",
-    "puppeteer": "^21.9.0",
-    "tesseract.js": "^5.0.4",
-    "pdf-parse": "^1.1.1"
+    "puppeteer-core": "^21.9.0",
+    "@sparticuz/chromium": "^121.0.0"
   },
   "engines": {
     "node": ">=18.x"
