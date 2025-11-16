@@ -1,8 +1,35 @@
 [phases.setup]
-nixPkgs = ["chromium", "nss", "freetype", "harfbuzz", "ca-certificates", "fontconfig"]
+nixPkgs = [
+  "chromium",
+  "nss",
+  "freetype",
+  "harfbuzz", 
+  "ca-certificates",
+  "fontconfig",
+  "libxcb",
+  "pango",
+  "atk",
+  "cups",
+  "gtk3",
+  "libdrm",
+  "mesa",
+  "xorg.libX11",
+  "xorg.libXcomposite",
+  "xorg.libXdamage",
+  "xorg.libXext",
+  "xorg.libXfixes",
+  "xorg.libXrandr",
+  "libxkbcommon",
+  "alsa-lib",
+  "dbus",
+  "expat",
+  "at-spi2-atk",
+  "at-spi2-core",
+  "libxshmfence"
+]
 
 [phases.install]
-cmds = ["npm ci"]
+cmds = ["npm ci --legacy-peer-deps"]
 
 [start]
-cmd = "npm start"
+cmd = "node index.js"
