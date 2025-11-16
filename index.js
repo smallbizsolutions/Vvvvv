@@ -7,7 +7,13 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+
+// Get Chromium executable path for Railway/Nix
+function getChromiumPath() {
+  // Railway with Nixpacks provides chromium at this path
+  return process.env.PUPPETEER_EXECUTABLE_PATH || '/nix/store/*-chromium-*/bin/chromium';
+}
 
 // Main scraping endpoint for VAPI
 app.post('/api/scrape', async (req, res) => {
@@ -33,16 +39,24 @@ app.post('/api/scrape', async (req, res) => {
 
     console.log(`Scraping URL: ${url} for query: ${query}`);
 
-    // Launch headless browser
+    // Launch headless browser with Railway-optimized settings
     browser = await puppeteer.launch({
       headless: 'new',
+      executablePath: process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD ? '/usr/bin/chromium' : undefined,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--disable-software-rasterizer',
-        '--disable-dev-tools'
+        '--disable-dev-tools',
+        '--disable-extensions',
+        '--disable-plugins',
+        '--disable-images', // Speed optimization
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--single-process', // Important for Railway
+        '--no-zygote' // Important for Railway
       ]
     });
 
@@ -51,6 +65,17 @@ app.post('/api/scrape', async (req, res) => {
     // Set viewport and user agent
     await page.setViewport({ width: 1920, height: 1080 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    
+    // Block unnecessary resources for faster loading
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const resourceType = req.resourceType();
+      if (['stylesheet', 'font', 'media'].includes(resourceType)) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
     
     // Navigate and wait for content to load
     await page.goto(url, { 
@@ -138,7 +163,7 @@ app.post('/api/scrape', async (req, res) => {
 
     if (needsOCR && scrapedData.images.length > 0) {
       console.log('Running OCR on images...');
-      scrapedData.imageText = await extractTextFromImages(scrapedData.images.slice(0, 5)); // Limit to 5 images
+      scrapedData.imageText = await extractTextFromImages(scrapedData.images.slice(0, 3)); // Limit to 3 images
     }
 
     // Check for PDF links
@@ -319,7 +344,7 @@ function filterRelevantContent(data, query) {
       relevant.details.push({
         type: 'heading',
         text: heading.text,
-        score: matches * 3 // Headings are more important
+        score: matches * 3
       });
     }
   });
@@ -346,7 +371,7 @@ function filterRelevantContent(data, query) {
         relevant.details.push({
           type: 'image_text',
           text: `[Menu Image] ${img.extractedText}`,
-          score: matches * 2 // Images often contain important info
+          score: matches * 2
         });
       }
     });
@@ -443,7 +468,7 @@ app.get('/', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 VAPI Enhanced Web Scraper running on port ${PORT}`);
   console.log(`📡 Health check: http://localhost:${PORT}/health`);
   console.log(`✨ Features: JS Rendering, OCR, PDF Extraction`);
