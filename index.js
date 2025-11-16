@@ -39,18 +39,15 @@ app.post('/api/scrape', async (req, res) => {
 
     console.log(`Scraping URL: ${url} for query: ${query}`);
 
-    // Launch headless browser with Docker/Railway-optimized settings
+    // Launch headless browser
     browser = await puppeteer.launch({
       headless: 'new',
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-software-rasterizer',
-        '--disable-dev-tools',
-        '--disable-extensions'
+        '--disable-gpu'
       ]
     });
 
