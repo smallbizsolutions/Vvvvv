@@ -1,0 +1,22 @@
+{
+  "name": "vapi-web-scraper",
+  "version": "1.0.0",
+  "description": "Web scraping tool for VAPI AI assistant",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "keywords": ["vapi", "scraper", "ai", "assistant"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0-rc.12",
+    "cors": "^2.8.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
