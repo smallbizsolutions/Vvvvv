@@ -11,13 +11,32 @@ app.use(express.json({ limit: '50mb' }));
 
 // Get Chromium executable path for Railway/Nix
 function getChromiumPath() {
-  // Railway with Nixpacks provides chromium at this path
-  return process.env.PUPPETEER_EXECUTABLE_PATH || '/nix/store/*-chromium-*/bin/chromium';
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    return process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+  // Railway Nixpacks path
+  return '/nix/var/nix/profiles/default/bin/chromium';
 }
 
 // Main scraping endpoint for VAPI
 app.post('/api/scrape', async (req, res) => {
   let browser;
+  
+  // Set timeout for entire operation
+  const operationTimeout = setTimeout(() => {
+    if (browser) browser.close();
+    if (!res.headersSent) {
+      res.json({
+        results: [{
+          toolCallId: req.body.message.toolCalls[0].id,
+          result: JSON.stringify({
+            success: false,
+            error: "Operation timeout - request took too long"
+          })
+        }]
+      });
+    }
+  }, 45000); // 45 second timeout
   
   try {
     console.log('Received scrape request:', JSON.stringify(req.body, null, 2));
@@ -26,6 +45,7 @@ app.post('/api/scrape', async (req, res) => {
     
     // Validate URL
     if (!url || !isValidUrl(url)) {
+      clearTimeout(operationTimeout);
       return res.json({
         results: [{
           toolCallId: req.body.message.toolCalls[0].id,
@@ -39,15 +59,25 @@ app.post('/api/scrape', async (req, res) => {
 
     console.log(`Scraping URL: ${url} for query: ${query}`);
 
-    // Launch headless browser
+    // Launch headless browser with optimized settings
     browser = await puppeteer.launch({
       headless: 'new',
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
+      executablePath: getChromiumPath(),
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-gpu'
+        '--disable-gpu',
+        '--disable-software-rasterizer',
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--disable-default-apps',
+        '--disable-sync',
+        '--metrics-recording-only',
+        '--mute-audio',
+        '--no-first-run',
+        '--safebrowsing-disable-auto-update',
+        '--disable-features=site-per-process'
       ]
     });
 
@@ -71,7 +101,7 @@ app.post('/api/scrape', async (req, res) => {
     // Navigate and wait for content to load
     await page.goto(url, { 
       waitUntil: 'networkidle2',
-      timeout: 30000 
+      timeout: 25000 
     });
 
     // Wait for dynamic content
@@ -154,7 +184,7 @@ app.post('/api/scrape', async (req, res) => {
 
     if (needsOCR && scrapedData.images.length > 0) {
       console.log('Running OCR on images...');
-      scrapedData.imageText = await extractTextFromImages(scrapedData.images.slice(0, 3)); // Limit to 3 images
+      scrapedData.imageText = await extractTextFromImages(scrapedData.images.slice(0, 2)); // Reduced to 2 images
     }
 
     // Check for PDF links
@@ -164,10 +194,11 @@ app.post('/api/scrape', async (req, res) => {
 
     if (pdfLinks.length > 0 && needsOCR) {
       console.log('Found PDF links, extracting text...');
-      scrapedData.pdfText = await extractTextFromPDFs(pdfLinks.slice(0, 2)); // Limit to 2 PDFs
+      scrapedData.pdfText = await extractTextFromPDFs(pdfLinks.slice(0, 1)); // Reduced to 1 PDF
     }
 
     await browser.close();
+    clearTimeout(operationTimeout);
 
     // Filter content based on query
     const relevantContent = filterRelevantContent(scrapedData, query);
@@ -193,6 +224,7 @@ app.post('/api/scrape', async (req, res) => {
 
   } catch (error) {
     console.error('Scraping error:', error.message);
+    clearTimeout(operationTimeout);
     
     if (browser) {
       await browser.close();
@@ -251,7 +283,8 @@ async function extractTextFromPDFs(pdfLinks) {
       
       const response = await axios.get(link.href, {
         responseType: 'arraybuffer',
-        timeout: 15000
+        timeout: 10000,
+        maxContentLength: 10 * 1024 * 1024 // 10MB limit
       });
       
       const pdfData = await pdf(response.data);
@@ -260,7 +293,7 @@ async function extractTextFromPDFs(pdfLinks) {
         results.push({
           source: link.href,
           title: link.text,
-          extractedText: pdfData.text.trim()
+          extractedText: pdfData.text.trim().substring(0, 5000) // Limit text length
         });
       }
     } catch (err) {
