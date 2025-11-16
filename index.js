@@ -39,10 +39,10 @@ app.post('/api/scrape', async (req, res) => {
 
     console.log(`Scraping URL: ${url} for query: ${query}`);
 
-    // Launch headless browser with Railway-optimized settings
+    // Launch headless browser with Docker/Railway-optimized settings
     browser = await puppeteer.launch({
       headless: 'new',
-      executablePath: process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD ? '/usr/bin/chromium' : undefined,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -50,13 +50,7 @@ app.post('/api/scrape', async (req, res) => {
         '--disable-gpu',
         '--disable-software-rasterizer',
         '--disable-dev-tools',
-        '--disable-extensions',
-        '--disable-plugins',
-        '--disable-images', // Speed optimization
-        '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process',
-        '--single-process', // Important for Railway
-        '--no-zygote' // Important for Railway
+        '--disable-extensions'
       ]
     });
 
